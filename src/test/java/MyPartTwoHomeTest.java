@@ -79,6 +79,18 @@ public class MyPartTwoHomeTest {
     }
 
     @Test
+    public void testRevertWhenErrorOccurredAfterAccept(){
+        KeysAndValues kv = injector.getInstance(MyKeysAndValuesImplementation.class);
+        kv.accept("max=2147483647");
+        kv.accept("max=2147483647");
+        String displayText = kv.display();
+        assertEquals("max=2147483647\n", displayText);
+        kv.undo();
+        displayText = kv.display();
+        assertEquals("max=2147483647\n", displayText);
+    }
+
+    @Test
     public void testRevertWithAtomicGroup(){
         KeysAndValues kv = injector.getInstance(MyKeysAndValuesImplementation.class);
         kv.accept("441=one,500=three,600=600");
