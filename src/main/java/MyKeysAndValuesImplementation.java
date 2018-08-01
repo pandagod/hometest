@@ -6,34 +6,42 @@ public class MyKeysAndValuesImplementation implements KeysAndValues{
 
     private final ErrorListener errorListener;
 
-    private TreeMap<MyKey,MyValue> map;
+    private TreeMap<MyKey,Stack<MyValue>> map;
 
-    private AtomicGroup<MyKey,String> atomicGroup;
+    private AtomicGroup<MyKey,MyValue> atomicGroup;
+
+    private long updateVersion = -1;
 
     @Inject
     public MyKeysAndValuesImplementation(ErrorListener ErrorListener){
         this.errorListener = ErrorListener;
-        map = new TreeMap<MyKey, MyValue>();
-        atomicGroup =  new AtomicGroup();
+        map = new TreeMap<MyKey, Stack<MyValue>>();
+        atomicGroup =  new AtomicGroup<MyKey,MyValue>();
         atomicGroup.addAtomicKey(new MyKey("441"));
         atomicGroup.addAtomicKey(new MyKey("442"));
         atomicGroup.addAtomicKey(new MyKey("500"));
     }
 
-    private void putValue(MyKey myKey, String value){
+    private void putValue(MyKey myKey, MyValue myValue){
         if(!map.containsKey(myKey)){
-            map.put(myKey,new MyValue(value));
+            Stack<MyValue> valueStack = new Stack<MyValue>();
+            valueStack.push(myValue);
+            map.put(myKey,valueStack);
         }else{
-            MyValue targetValue = (MyValue)map.get(myKey);
+            Stack<MyValue> targetStack = (Stack<MyValue>)map.get(myKey);
+            MyValue peekValue = targetStack.peek();
             try {
-                targetValue.update(value);
+                myValue.update(peekValue);
             }catch (ArithmeticException ae){
                 errorListener.onError("Update current value is failure",ae);
             }
+            targetStack.push(myValue);
         }
     }
 
+    @Override
     public void accept(String kvPairs) {
+        updateVersion++;
         String[] tuples = kvPairs.split(",");
         for(String tuple:tuples){
             int equalIndex = tuple.indexOf("=");
@@ -43,18 +51,21 @@ public class MyKeysAndValuesImplementation implements KeysAndValues{
                 String pattern= "^[a-zA-Z0-9]*$";
                 if(key.matches(pattern)){
                     MyKey myKey = new MyKey(key);
+                    MyValue myValue = new MyValue(value,updateVersion);
                     if(atomicGroup.isAtomicKey(myKey)){
-                        if(!atomicGroup.storeValue(myKey,value)){
+                        myValue.setUpdateAtomicVersion(myValue.getUpdateVersion());
+                        if(!atomicGroup.storeValue(myKey,myValue)){
                             errorListener.onError(String.format("Atomic key [%s] overlap is not allowed, reject to accept",myKey.getKey()));
                         }
                         if(atomicGroup.isStoreValueFull()){
-                            for (Map.Entry<MyKey,String> entry: atomicGroup.getAtomicMap().entrySet()){
-                                putValue(entry.getKey(),entry.getValue());
+                            for (Map.Entry<MyKey,MyValue> entry: atomicGroup.getAtomicMap().entrySet()){
+                                MyValue valueWithNewVersion = entry.getValue().createAtomicValue(updateVersion);
+                                putValue(entry.getKey(),valueWithNewVersion);
                             }
-                            atomicGroup.setAtomicMap(new HashMap<MyKey, String>());
+                            atomicGroup.setAtomicMap(new HashMap<MyKey, MyValue>());
                         }
                     }else {
-                        putValue(myKey,value);
+                        putValue(myKey,myValue);
                     }
 
                 }else{
@@ -72,13 +83,39 @@ public class MyKeysAndValuesImplementation implements KeysAndValues{
         }
     }
 
+    @Override
     public String display() {
         String result = "";
-        for (Map.Entry<MyKey,MyValue> entry: this.map.entrySet()){
+        for (Map.Entry<MyKey,Stack<MyValue>> entry: this.map.entrySet()){
             MyKey myKey = entry.getKey();
-            MyValue myValue = entry.getValue();
-            result += (myKey.toString()+"="+myValue.toString()+"\n");
+            Stack<MyValue> stack = entry.getValue();
+            result += (myKey.toString()+"="+stack.peek().toString()+"\n");
         }
         return result;
+    }
+
+    @Override
+    public void undo() {
+        if(updateVersion>-1){
+            Iterator<Map.Entry<MyKey,Stack<MyValue>>> it = this.map.entrySet().iterator();
+            while (it.hasNext()){
+                Map.Entry<MyKey,Stack<MyValue>> entry =it.next();
+                Stack<MyValue> stack = entry.getValue();
+                MyValue peekValue = stack.peek();
+                while (peekValue!=null && peekValue.getUpdateVersion()==updateVersion){
+                    if(atomicGroup.isAtomicKey(entry.getKey()) && peekValue.getUpdateAtomicVersion() < updateVersion){
+                        atomicGroup.storeValue(entry.getKey(),peekValue); //rebuild atomic map when reverting some atomic key
+                    }
+                    stack.pop();
+                    if(stack.empty()){
+                        it.remove();
+                        peekValue = null;
+                    }else{
+                        peekValue = stack.peek();
+                    }
+                }
+            }
+            updateVersion--;
+        }
     }
 }
